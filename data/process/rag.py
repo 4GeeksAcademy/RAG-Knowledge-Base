@@ -4,6 +4,8 @@ import os
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams
 
 # Read LLM_API_KEY, LLM_API_URL, EMBEDDING_MODEL ... from .env
 load_dotenv()
@@ -16,6 +18,15 @@ openai_client = OpenAI(
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_API_URL", "https://api.openai.com/v1"),
 )
+
+# Qdrant collection (name required by the BRIEFING)
+COLLECTION_NAME = "healthcore_knowledge"
+
+# Length of a text-embedding-3-small vector (measured with len(embed("test")))
+VECTOR_SIZE = 1536
+
+# One Qdrant client, reused for every call
+qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
 
 # File name in docs/company-knowledge-base/ -> source_document ID (BRIEFING section 3).
 SOURCE_DOCUMENTS = {
@@ -130,3 +141,15 @@ def embed(text: str) -> list[float]:
     """Return the embedding vector of a text, using the embedding model."""
     response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=text)
     return response.data[0].embedding
+
+# It prepares the Qdrant database before storing HealthCore document embeddings.
+# Create the Qdrant collection, replacing it if it already exists.
+def create_collection() -> None:
+    """(Re)create the collection with the embedding size and cosine distance."""
+    if qdrant_client.collection_exists(COLLECTION_NAME):
+        qdrant_client.delete_collection(COLLECTION_NAME)
+
+    qdrant_client.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+    )

@@ -1,5 +1,22 @@
 """Chunking and indexing for the HealthCore knowledge base (Qdrant)."""
 
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# Read LLM_API_KEY, LLM_API_URL, EMBEDDING_MODEL ... from .env
+load_dotenv()
+
+# Embedding model: must be different from the generation model (LLM_MODEL)
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+# One OpenAI client, reused for every embed() call
+openai_client = OpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    base_url=os.getenv("LLM_API_URL", "https://api.openai.com/v1"),
+)
+
 # File name in docs/company-knowledge-base/ -> source_document ID (BRIEFING section 3).
 SOURCE_DOCUMENTS = {
     "healthcore-insurance-coverage.en.md": "insurance-coverage",
@@ -106,3 +123,10 @@ def chunk_document(filename: str, text: str) -> list[dict]:
 
     return final_chunks
 
+
+
+# Convert text into a vector. Used for both indexing and queries.
+def embed(text: str) -> list[float]:
+    """Return the embedding vector of a text, using the embedding model."""
+    response = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=text)
+    return response.data[0].embedding

@@ -1,11 +1,13 @@
 """Chunking and indexing for the HealthCore knowledge base (Qdrant)."""
 
 import os
+import uuid
+from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 # Read LLM_API_KEY, LLM_API_URL, EMBEDDING_MODEL ... from .env
 load_dotenv()
@@ -27,6 +29,13 @@ VECTOR_SIZE = 1536
 
 # One Qdrant client, reused for every call
 qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
+
+# Folder with the HealthCore source documents (repo root / docs / company-knowledge-base)
+KNOWLEDGE_BASE_DIR = Path(__file__).resolve().parents[2] / "docs" / "company-knowledge-base"
+
+# Fixed payload values for every chunk
+COMPANY = "healthcore"
+LANGUAGE = "en"
 
 # File name in docs/company-knowledge-base/ -> source_document ID (BRIEFING section 3).
 SOURCE_DOCUMENTS = {
@@ -153,3 +162,42 @@ def create_collection() -> None:
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
     )
+
+
+# Same chunk -> same ID, so running setup() again overwrites instead of duplicating.
+def point_id(chunk: dict) -> str:
+    """Deterministic UUIDv5 from source_document + section + chunk_index."""
+    key = f"{chunk['source_document']}|{chunk['section']}|{chunk['chunk_index']}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+
+
+# Index the knowledge base: load -> chunk -> embed -> upsert.
+def setup() -> int:
+    """Index every *.en.md file in the knowledge base folder. Returns the number of points."""
+    # Create the collection only the first time; later runs keep it and upsert
+    if not qdrant_client.collection_exists(COLLECTION_NAME):
+        create_collection()
+
+    points = []
+
+    for path in sorted(KNOWLEDGE_BASE_DIR.glob("*.en.md")):
+        text = path.read_text(encoding="utf-8")
+
+        for chunk in chunk_document(path.name, text):
+            points.append(
+                PointStruct(
+                    id=point_id(chunk),
+                    vector=embed(chunk["text"]),
+                    payload={
+                        "company": COMPANY,
+                        "source_document": chunk["source_document"],
+                        "section": chunk["section"],
+                        "language": LANGUAGE,
+                        "chunk_index": chunk["chunk_index"],
+                        "text": chunk["text"],
+                    },
+                )
+            )
+
+    qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points)
+    return len(points)
